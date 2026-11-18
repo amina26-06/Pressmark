@@ -636,14 +636,21 @@ with review_tab:
                 )
 
         else:
+            configured_rules = get_brand_rules()
 
-            st.success(
-                "🎉 No brand guideline violations found!"
-            )
+            if not configured_rules:
+                st.info(
+                    "No rules configured yet. Add brand rules in the sidebar "
+                    "before checking whether content follows your guidelines."
+                )
+            else:
+                st.success(
+                    "🎉 No brand guideline violations found!"
+                )
 
-            st.write(
-                "Your content passed the current brand rule checks."
-            )
+                st.write(
+                    "Your content passed the current brand rule checks."
+                )
 
 
 # ==================================================

@@ -39,19 +39,38 @@ def initialize_db():
         )
     """)
 
+    default_rules = [
+        ("Restricted Word", "cheap", "affordable"),
+        ("Restricted Word", "guaranteed", "reliable"),
+        ("Restricted Word", "best in the world", "high-quality"),
+        ("Preferred Word", "deals", "offers")
+    ]
+
+    for rule_type, word, replacement in default_rules:
+        existing = conn.execute("""
+            SELECT id FROM brand_rules
+            WHERE LOWER(rule_type) = LOWER(?)
+            AND LOWER(original_word) = LOWER(?)
+        """, (rule_type, word)).fetchone()
+
+        if not existing:
+            conn.execute("""
+                INSERT INTO brand_rules
+                (rule_type, original_word, replacement)
+                VALUES (?, ?, ?)
+            """, (rule_type, word, replacement))
+
     conn.commit()
     conn.close()
 
 
 def get_brand_rules():
     conn = get_connection()
-
     rows = conn.execute("""
         SELECT rule_type, original_word, replacement
         FROM brand_rules
         ORDER BY id
     """).fetchall()
-
     conn.close()
     return rows
 
@@ -84,12 +103,10 @@ def add_brand_rule(rule_type, original_word, replacement=""):
 
 def delete_brand_rule(rule_id):
     conn = get_connection()
-
     conn.execute(
         "DELETE FROM brand_rules WHERE id = ?",
         (rule_id,)
     )
-
     conn.commit()
     conn.close()
 
