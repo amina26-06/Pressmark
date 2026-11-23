@@ -254,6 +254,37 @@ p, label {
     border-radius: 9px;
 }
 
+/* FIX: TEXT VISIBILITY IN INPUTS AND TEXT AREAS */
+
+/* FIX: TEXT VISIBILITY IN INPUTS AND TEXT AREAS */
+
+div[data-testid="stTextInput"] input,
+div[data-testid="stTextArea"] textarea {
+    color: #172B3A !important;
+    -webkit-text-fill-color: #172B3A !important;
+    background-color: #FFFFFF !important;
+    caret-color: #172B3A !important;
+    opacity: 1 !important;
+}
+
+div[data-testid="stTextArea"] textarea::placeholder,
+div[data-testid="stTextInput"] input::placeholder {
+    color: #74838B !important;
+    -webkit-text-fill-color: #74838B !important;
+    opacity: 1 !important;
+}
+
+div[data-testid="stTextArea"] textarea {
+    background-color: #FFFFFF !important;
+}
+
+div[data-testid="stTextArea"] textarea::placeholder,
+div[data-testid="stTextInput"] input::placeholder {
+    color: #74838B !important;
+    -webkit-text-fill-color: #74838B !important;
+    opacity: 1 !important;
+}
+
 div[role="radiogroup"] {
     gap: 7px;
 }
@@ -749,7 +780,6 @@ elif selected_page == "Review Studio":
 
         st.subheader("Analysis results")
 
-        # Reviewer attribution
         st.markdown("### Reviewer information")
 
         reviewer_name = st.text_input(
@@ -908,7 +938,6 @@ elif selected_page == "Review Studio":
                 f"Pending: **{pending_count}**"
             )
 
-            # Save reviewer name, decision and severity to audit log.
             for index, item in enumerate(review_decisions):
 
                 decision = item["decision"]
@@ -1383,10 +1412,15 @@ elif selected_page == "Brand Policies":
 
         policy_description = st.text_area(
             "Policy description",
-            placeholder="Describe the brand guideline..."
+            placeholder="Describe the brand guideline...",
+            height=150,
+            key="policy_description_input"
         )
 
-        submitted = st.form_submit_button("Save Policy")
+        submitted = st.form_submit_button(
+            "Save Policy",
+            use_container_width=True
+        )
 
         if submitted:
 
@@ -1402,10 +1436,14 @@ elif selected_page == "Brand Policies":
                 st.rerun()
 
             else:
-                st.warning("Please enter both a title and description.")
+                st.warning(
+                    "Please enter both a title and description."
+                )
 
-    st.markdown("<div class='section-line'></div>",
-                unsafe_allow_html=True)
+    st.markdown(
+        "<div class='section-line'></div>",
+        unsafe_allow_html=True
+    )
 
     st.subheader("Saved brand policies")
 
@@ -1418,18 +1456,24 @@ elif selected_page == "Brand Policies":
             col1, col2 = st.columns([4, 1])
 
             with col1:
+
                 st.markdown(f"**{policy[2]}**")
                 st.caption(policy[1])
                 st.write(policy[3])
 
             with col2:
-                if st.button("Delete", key=f"delete_policy_{policy[0]}"):
+
+                if st.button(
+                    "Delete",
+                    key=f"delete_policy_{policy[0]}"
+                ):
                     delete_brand_policy(policy[0])
                     st.rerun()
 
             st.divider()
 
     else:
+
         st.info("No brand policies added yet.")
 
 
