@@ -13,10 +13,13 @@ from database import (
     add_brand_rule,
     save_review_audit,
     get_audit_history,
-    get_dashboard_stats
+    get_dashboard_stats,
+    add_brand_policy,
+    get_brand_policies,
+    delete_brand_policy
 )
 
-from brand_checker import check_brand_content
+from brand_checker import check_brand_content, analyze_with_groq
 
 
 # ==========================================================
@@ -466,6 +469,7 @@ with st.sidebar:
             "Overview",
             "Review Studio",
             "Brand Rules",
+            "Brand Policies",
             "Audit Logs"
         ],
         label_visibility="collapsed"
@@ -683,13 +687,26 @@ elif selected_page == "Review Studio":
 
             restricted, preferred, _ = load_rules()
 
-            st.session_state.review_issues = check_brand_content(
+            # Run the configured rule-based analysis first so it remains
+            # available even if the optional AI analysis cannot run.
+            issues = check_brand_content(
                 content,
                 restricted,
                 preferred
             )
 
+            try:           
+                ai_issues = analyze_with_groq(content, st.secrets["GROQ_API_KEY"], [f"{p[1]} - {p[2]}: {p[3]}" for p in get_brand_policies()])
+                issues.extend(ai_issues)
+                st.success("Context-aware AI analysis completed.")
+            except Exception as e:
+                st.error(f"Groq sconnection error: {e}")
+                st.warning("Showing rule-based results instead.")
+
+            # Save the combined results for the review panel.
+            st.session_state.review_issues = issues
             st.session_state.review_has_run = True
+
         else:
             st.warning("Please enter some content first.")
 
@@ -697,10 +714,6 @@ elif selected_page == "Review Studio":
 
         issues = st.session_state.review_issues
         original_content = st.session_state.review_content
-
-        st.markdown("<div class='section-line'></div>",
-                    unsafe_allow_html=True)
-
         st.subheader("Analysis results")
 
         if not issues:
@@ -1118,7 +1131,83 @@ elif selected_page == "Brand Rules":
 # ==========================================================
 # AUDIT LOGS
 # ==========================================================
+elif selected_page == "Brand Policies":
 
+    page_heading(
+        "BRAND GOVERNANCE",
+        "Brand Policies",
+        "Create and manage guidelines for consistent brand communication."
+    )
+
+    st.subheader("Add a new policy")
+
+    with st.form("add_brand_policy_form"):
+
+        policy_category = st.selectbox(
+            "Policy category",
+            [
+                "Tone of Voice",
+                "Writing Style",
+                "Disclaimers",
+                "Organizational Policy"
+            ]
+        )
+
+        policy_title = st.text_input(
+            "Policy title",
+            placeholder="Example: Professional communication"
+        )
+
+        policy_description = st.text_area(
+            "Policy description",
+            placeholder="Describe the brand guideline..."
+        )
+
+        submitted = st.form_submit_button("Save Policy")
+
+        if submitted:
+
+            if policy_title.strip() and policy_description.strip():
+
+                add_brand_policy(
+                    policy_category,
+                    policy_title.strip(),
+                    policy_description.strip()
+                )
+
+                st.success("Brand policy saved successfully!")
+                st.rerun()
+
+            else:
+                st.warning("Please enter both a title and description.")
+
+    st.markdown("<div class='section-line'></div>",
+                unsafe_allow_html=True)
+
+    st.subheader("Saved brand policies")
+
+    policies = get_brand_policies()
+
+    if policies:
+
+        for policy in policies:
+
+            col1, col2 = st.columns([4, 1])
+
+            with col1:
+                st.markdown(f"**{policy[2]}**")
+                st.caption(policy[1])
+                st.write(policy[3])
+
+            with col2:
+                if st.button("Delete", key=f"delete_policy_{policy[0]}"):
+                    delete_brand_policy(policy[0])
+                    st.rerun()
+
+            st.divider()
+
+    else:
+        st.info("No brand policies added yet.")
 elif selected_page == "Audit Logs":
 
     page_heading(

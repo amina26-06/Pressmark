@@ -38,6 +38,15 @@ def initialize_db():
             reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS brand_policies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            policy_category TEXT NOT NULL,
+            policy_title TEXT NOT NULL,
+            policy_description TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
     default_rules = [
         ("Restricted Word", "cheap", "affordable"),
@@ -196,3 +205,47 @@ def get_dashboard_stats():
         "rejected": rejected,
         "reviewed_content": unique_content
     }
+
+def add_brand_policy(policy_category, policy_title, policy_description):
+    conn = get_connection()
+
+    conn.execute("""
+        INSERT INTO brand_policies (
+            policy_category,
+            policy_title,
+            policy_description
+        )
+        VALUES (?, ?, ?)
+    """, (
+        policy_category,
+        policy_title,
+        policy_description
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def get_brand_policies():
+    conn = get_connection()
+
+    rows = conn.execute("""
+        SELECT id, policy_category, policy_title, policy_description
+        FROM brand_policies
+        ORDER BY id DESC
+    """).fetchall()
+
+    conn.close()
+    return rows
+
+
+def delete_brand_policy(policy_id):
+    conn = get_connection()
+
+    conn.execute(
+        "DELETE FROM brand_policies WHERE id = ?",
+        (policy_id,)
+    )
+
+    conn.commit()
+    conn.close()
