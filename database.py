@@ -35,9 +35,12 @@ def initialize_db():
             decision TEXT NOT NULL,
             original_content TEXT,
             corrected_content TEXT,
-            reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            severity TEXT DEFAULT 'Unknown',
+            reviewer TEXT DEFAULT 'Unassigned'
         )
     """)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS brand_policies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,6 +50,24 @@ def initialize_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # Safely upgrade existing databases without deleting records.
+    existing_columns = [
+        row[1] for row in
+        conn.execute("PRAGMA table_info(review_audit)").fetchall()
+    ]
+
+    if "severity" not in existing_columns:
+        conn.execute("""
+            ALTER TABLE review_audit
+            ADD COLUMN severity TEXT DEFAULT 'Unknown'
+        """)
+
+    if "reviewer" not in existing_columns:
+        conn.execute("""
+            ALTER TABLE review_audit
+            ADD COLUMN reviewer TEXT DEFAULT 'Unassigned'
+        """)
 
     default_rules = [
         ("Restricted Word", "cheap", "affordable"),
@@ -73,13 +94,19 @@ def initialize_db():
     conn.close()
 
 
+# --------------------------------------------------
+# BRAND RULES
+# --------------------------------------------------
+
 def get_brand_rules():
     conn = get_connection()
+
     rows = conn.execute("""
         SELECT rule_type, original_word, replacement
         FROM brand_rules
         ORDER BY id
     """).fetchall()
+
     conn.close()
     return rows
 
@@ -112,13 +139,19 @@ def add_brand_rule(rule_type, original_word, replacement=""):
 
 def delete_brand_rule(rule_id):
     conn = get_connection()
+
     conn.execute(
         "DELETE FROM brand_rules WHERE id = ?",
         (rule_id,)
     )
+
     conn.commit()
     conn.close()
 
+
+# --------------------------------------------------
+# REVIEW AUDIT
+# --------------------------------------------------
 
 def save_review_audit(
     issue,
@@ -126,7 +159,9 @@ def save_review_audit(
     replacement,
     decision,
     original_content,
-    corrected_content
+    corrected_content,
+    severity="Unknown",
+    reviewer="Unassigned"
 ):
     conn = get_connection()
 
@@ -137,16 +172,20 @@ def save_review_audit(
             replacement,
             decision,
             original_content,
-            corrected_content
+            corrected_content,
+            severity,
+            reviewer
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         issue,
         original_word,
         replacement,
         decision,
         original_content,
-        corrected_content
+        corrected_content,
+        severity,
+        reviewer
     ))
 
     conn.commit()
@@ -165,7 +204,9 @@ def get_audit_history(limit=500):
             decision,
             original_content,
             corrected_content,
-            reviewed_at
+            reviewed_at,
+            severity,
+            reviewer
         FROM review_audit
         ORDER BY id DESC
         LIMIT ?
@@ -174,6 +215,10 @@ def get_audit_history(limit=500):
     conn.close()
     return rows
 
+
+# --------------------------------------------------
+# DASHBOARD STATISTICS
+# --------------------------------------------------
 
 def get_dashboard_stats():
     conn = get_connection()
@@ -206,7 +251,124 @@ def get_dashboard_stats():
         "reviewed_content": unique_content
     }
 
-def add_brand_policy(policy_category, policy_title, policy_description):
+
+# --------------------------------------------------
+# ADVANCED ANALYTICS
+# --------------------------------------------------
+
+def get_analytics_stats():
+    conn = get_connection()
+
+    total = conn.execute("""
+        SELECT COUNT(*) FROM review_audit
+    """).fetchone()[0]
+
+    accepted = conn.execute("""
+        SELECT COUNT(*) FROM review_audit
+        WHERE decision = 'Accepted'
+    """).fetchone()[0]
+
+    rejected = conn.execute("""
+        SELECT COUNT(*) FROM review_audit
+        WHERE decision = 'Rejected'
+    """).fetchone()[0]
+
+    pending = conn.execute("""
+        SELECT COUNT(*) FROM review_audit
+        WHERE decision = 'Pending'
+    """).fetchone()[0]
+
+    acceptance_rate = (
+        round((accepted / (accepted + rejected)) * 100, 1)
+        if accepted + rejected > 0
+        else 0
+    )
+
+    conn.close()
+
+    return {
+        "total": total,
+        "accepted": accepted,
+        "rejected": rejected,
+        "pending": pending,
+        "acceptance_rate": acceptance_rate
+    }
+
+
+def get_severity_distribution():
+    conn = get_connection()
+
+    rows = conn.execute("""
+        SELECT severity, COUNT(*)
+        FROM review_audit
+        GROUP BY severity
+        ORDER BY COUNT(*) DESC
+    """).fetchall()
+
+    conn.close()
+    return rows
+
+
+def get_top_flagged_terms(limit=10):
+    conn = get_connection()
+
+    rows = conn.execute("""
+        SELECT
+            COALESCE(NULLIF(original_word, ''), 'Other'),
+            COUNT(*)
+        FROM review_audit
+        GROUP BY LOWER(original_word)
+        ORDER BY COUNT(*) DESC
+        LIMIT ?
+    """, (limit,)).fetchall()
+
+    conn.close()
+    return rows
+
+
+def get_review_activity():
+    conn = get_connection()
+
+    rows = conn.execute("""
+        SELECT
+            DATE(reviewed_at),
+            COUNT(*)
+        FROM review_audit
+        GROUP BY DATE(reviewed_at)
+        ORDER BY DATE(reviewed_at)
+    """).fetchall()
+
+    conn.close()
+    return rows
+
+
+def get_reviewer_stats():
+    conn = get_connection()
+
+    rows = conn.execute("""
+        SELECT
+            reviewer,
+            COUNT(*) AS total_reviews,
+            SUM(CASE WHEN decision = 'Accepted' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN decision = 'Rejected' THEN 1 ELSE 0 END)
+        FROM review_audit
+        GROUP BY reviewer
+        ORDER BY total_reviews DESC
+    """).fetchall()
+
+    conn.close()
+    return rows
+
+
+# --------------------------------------------------
+# BRAND POLICIES
+# --------------------------------------------------
+
+def add_brand_policy(
+    policy_category,
+    policy_title,
+    policy_description
+):
     conn = get_connection()
 
     conn.execute("""
@@ -230,7 +392,11 @@ def get_brand_policies():
     conn = get_connection()
 
     rows = conn.execute("""
-        SELECT id, policy_category, policy_title, policy_description
+        SELECT
+            id,
+            policy_category,
+            policy_title,
+            policy_description
         FROM brand_policies
         ORDER BY id DESC
     """).fetchall()

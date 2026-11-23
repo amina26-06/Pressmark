@@ -1,6 +1,8 @@
+
 import re
 import json
 from groq import Groq
+
 
 def contains_whole_word(text, word):
     pattern = rf"\b{re.escape(word)}\b"
@@ -20,6 +22,7 @@ def check_brand_content(text, restricted_words, preferred_words):
 
             issues.append({
                 "issue": f"Restricted word found: {word}",
+                "matched_term": word.lower(),
                 "suggestion": (
                     f"Remove or replace '{word}' "
                     "with an approved term."
@@ -28,7 +31,8 @@ def check_brand_content(text, restricted_words, preferred_words):
                 "reason": (
                     "This word violates the brand's "
                     "restricted-word guideline."
-                )
+                ),
+                "source": "Rule-Based Analysis"
             })
 
     for old_word, new_word in preferred_words.items():
@@ -37,6 +41,7 @@ def check_brand_content(text, restricted_words, preferred_words):
 
             issues.append({
                 "issue": f"Use of '{old_word}'",
+                "matched_term": old_word.lower(),
                 "suggestion": (
                     f"Consider using '{new_word}' instead."
                 ),
@@ -44,12 +49,15 @@ def check_brand_content(text, restricted_words, preferred_words):
                 "reason": (
                     "The brand prefers consistent use "
                     "of approved terminology."
-                )
+                ),
+                "source": "Rule-Based Analysis"
             })
 
     return issues
 
+
 def analyze_with_groq(text, api_key, policies=None):
+
     if not text.strip():
         return []
 
@@ -58,7 +66,8 @@ def analyze_with_groq(text, api_key, policies=None):
 
     prompt = f"""
 You are a professional brand compliance analyst.
-Analyze the following content for contextual brand violations.
+
+Analyze the content for contextual brand violations.
 
 Look for:
 1. Tone-of-voice inconsistencies.
@@ -66,6 +75,14 @@ Look for:
 3. Misleading or exaggerated claims.
 4. Inappropriate wording in context.
 5. Violations of the supplied brand policies.
+
+IMPORTANT:
+- Identify contextual problems, not just individual restricted words.
+- Do not repeat a simple restricted-word finding if it is already
+  covered by terminology rules.
+- You may identify a broader contextual problem involving the same
+  sentence if it adds a genuinely different insight.
+- Do not invent violations.
 
 Brand policies:
 {policy_text if policy_text else "No additional policies supplied."}
@@ -86,7 +103,6 @@ Return ONLY valid JSON in this exact structure:
 }}
 
 Severity must be High, Medium, or Low.
-Do not invent violations.
 If no violations are found, return an empty issues list.
 """
 
@@ -108,15 +124,57 @@ If no violations are found, return an empty issues list.
     cleaned_issues = []
 
     for item in ai_issues:
+
         if not isinstance(item, dict):
             continue
 
+        severity = str(
+            item.get("severity", "Medium")
+        ).capitalize()
+
+        if severity not in ["High", "Medium", "Low"]:
+            severity = "Medium"
+
         cleaned_issues.append({
-            "issue": str(item.get("issue", "Brand guideline concern")),
-            "suggestion": str(item.get("suggestion", "Review this content.")),
-            "severity": str(item.get("severity", "Medium")),
-            "reason": str(item.get("reason", "Contextual brand concern detected.")),
+            "issue": str(
+                item.get("issue", "Brand guideline concern")
+            ),
+            "suggestion": str(
+                item.get("suggestion", "Review this content.")
+            ),
+            "severity": severity,
+            "reason": str(
+                item.get("reason", "Contextual brand concern detected.")
+            ),
             "source": "AI Context Analysis"
         })
 
     return cleaned_issues
+
+
+def remove_duplicate_ai_issues(rule_issues, ai_issues):
+
+    rule_terms = {
+        str(issue.get("matched_term", "")).lower().strip()
+        for issue in rule_issues
+        if issue.get("matched_term")
+    }
+
+    filtered_issues = []
+
+    for ai_issue in ai_issues:
+
+        ai_text = (
+            str(ai_issue.get("issue", "")) + " " +
+            str(ai_issue.get("reason", ""))
+        ).lower()
+
+        duplicate = any(
+            contains_whole_word(ai_text, term)
+            for term in rule_terms
+        )
+
+        if not duplicate:
+            filtered_issues.append(ai_issue)
+
+    return filtered_issues

@@ -14,12 +14,21 @@ from database import (
     save_review_audit,
     get_audit_history,
     get_dashboard_stats,
+    get_analytics_stats,
+    get_severity_distribution,
+    get_top_flagged_terms,
+    get_review_activity,
+    get_reviewer_stats,
     add_brand_policy,
     get_brand_policies,
     delete_brand_policy
 )
 
-from brand_checker import check_brand_content, analyze_with_groq
+from brand_checker import (
+    check_brand_content,
+    analyze_with_groq,
+    remove_duplicate_ai_issues
+)
 
 
 # ==========================================================
@@ -274,7 +283,8 @@ defaults = {
     "review_content": "",
     "review_id": 0,
     "audit_saved": set(),
-    "corrected_content": ""
+    "corrected_content": "",
+    "reviewer_name": ""
 }
 
 for key, value in defaults.items():
@@ -371,7 +381,8 @@ def get_issue_words(issue, preferred, restricted_replacements):
 
         replacement_word = next(
             (
-                value for key, value in preferred.items()
+                value for key, value
+                in preferred.items()
                 if key.lower() == original_word.lower()
             ),
             ""
@@ -390,7 +401,7 @@ def build_corrected_content(original_content, decisions):
         word = item["original_word"]
         replacement = item["replacement"]
 
-        if word:
+        if word and replacement:
             corrected = re.sub(
                 rf"\b{re.escape(word)}\b",
                 lambda match: replacement,
@@ -468,6 +479,7 @@ with st.sidebar:
         [
             "Overview",
             "Review Studio",
+            "Analytics",
             "Brand Rules",
             "Brand Policies",
             "Audit Logs"
@@ -578,20 +590,23 @@ if selected_page == "Overview":
 
         rules = get_brand_rules()
 
-        restricted = sum(1 for rule in rules if rule[0] == "Restricted Word")
-        preferred = sum(1 for rule in rules if rule[0] == "Preferred Word")
+        restricted = sum(
+            1 for rule in rules if rule[0] == "Restricted Word"
+        )
+        preferred = sum(
+            1 for rule in rules if rule[0] == "Preferred Word"
+        )
 
         st.markdown(f"""
-    <div class="pm-card">
-        <div class="pm-card-title">Configured guidelines</div>
-        <h2 style="color:#159989 !important;">{len(rules)}</h2>
-        <p class="pm-muted">Total active terminology rules</p>
-        <div class="section-line"></div>
-        <p>🔴 Restricted terms: <b>{restricted}</b></p>
-        <p>🟢 Preferred terms: <b>{preferred}</b></p>
-    </div>
-    """, unsafe_allow_html=True)
-    
+        <div class="pm-card">
+            <div class="pm-card-title">Configured guidelines</div>
+            <h2 style="color:#159989 !important;">{len(rules)}</h2>
+            <p class="pm-muted">Total active terminology rules</p>
+            <div class="section-line"></div>
+            <p>🔴 Restricted terms: <b>{restricted}</b></p>
+            <p>🟢 Preferred terms: <b>{preferred}</b></p>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("<div class='section-line'></div>",
                 unsafe_allow_html=True)
@@ -606,12 +621,15 @@ if selected_page == "Overview":
             columns=[
                 "ID", "Issue", "Original Word", "Replacement",
                 "Decision", "Original Content", "Corrected Content",
-                "Reviewed At"
+                "Reviewed At", "Severity", "Reviewer"
             ]
         )
 
         st.dataframe(
-            recent_df[["ID", "Issue", "Decision", "Reviewed At"]],
+            recent_df[
+                ["ID", "Issue", "Decision", "Severity",
+                 "Reviewer", "Reviewed At"]
+            ],
             use_container_width=True,
             hide_index=True
         )
@@ -655,7 +673,9 @@ elif selected_page == "Review Studio":
             extracted_text = extract_document(uploaded_file)
 
             if extracted_text.strip():
-                st.success(f"Successfully extracted text from {uploaded_file.name}")
+                st.success(
+                    f"Successfully extracted text from {uploaded_file.name}"
+                )
 
                 with st.expander("Preview extracted document"):
                     st.text(extracted_text)
@@ -687,23 +707,35 @@ elif selected_page == "Review Studio":
 
             restricted, preferred, _ = load_rules()
 
-            # Run the configured rule-based analysis first so it remains
-            # available even if the optional AI analysis cannot run.
             issues = check_brand_content(
                 content,
                 restricted,
                 preferred
             )
 
-            try:           
-                ai_issues = analyze_with_groq(content, st.secrets["GROQ_API_KEY"], [f"{p[1]} - {p[2]}: {p[3]}" for p in get_brand_policies()])
-                issues.extend(ai_issues)
+            try:
+                ai_issues = analyze_with_groq(
+                    content,
+                    st.secrets["GROQ_API_KEY"],
+                    [
+                        f"{p[1]} - {p[2]}: {p[3]}"
+                        for p in get_brand_policies()
+                    ]
+                )
+
+                filtered_ai_issues = remove_duplicate_ai_issues(
+                    issues,
+                    ai_issues
+                )
+
+                issues.extend(filtered_ai_issues)
+
                 st.success("Context-aware AI analysis completed.")
+
             except Exception as e:
-                st.error(f"Groq sconnection error: {e}")
+                st.error(f"Groq connection error: {e}")
                 st.warning("Showing rule-based results instead.")
 
-            # Save the combined results for the review panel.
             st.session_state.review_issues = issues
             st.session_state.review_has_run = True
 
@@ -714,7 +746,20 @@ elif selected_page == "Review Studio":
 
         issues = st.session_state.review_issues
         original_content = st.session_state.review_content
+
         st.subheader("Analysis results")
+
+        # Reviewer attribution
+        st.markdown("### Reviewer information")
+
+        reviewer_name = st.text_input(
+            "Reviewer name",
+            value=st.session_state.reviewer_name,
+            placeholder="Enter the name of the person reviewing this content",
+            key="reviewer_name_input"
+        )
+
+        st.session_state.reviewer_name = reviewer_name.strip()
 
         if not issues:
             if get_brand_rules():
@@ -731,11 +776,13 @@ elif selected_page == "Review Studio":
 
         else:
             high_count = sum(
-                1 for issue in issues if issue["severity"] == "High"
+                1 for issue in issues
+                if issue.get("severity") == "High"
             )
 
             medium_count = sum(
-                1 for issue in issues if issue["severity"] == "Medium"
+                1 for issue in issues
+                if issue.get("severity") == "Medium"
             )
 
             compliance_score = max(
@@ -786,7 +833,7 @@ elif selected_page == "Review Studio":
 
             for index, issue in enumerate(issues):
 
-                severity = issue["severity"]
+                severity = issue.get("severity", "Unknown")
 
                 if severity == "High":
                     st.error(f"🔴 HIGH SEVERITY · {issue['issue']}")
@@ -798,9 +845,9 @@ elif selected_page == "Review Studio":
                 st.markdown(f"""
                 <div class="pm-card">
                     <div class="pm-card-title">Why this was flagged</div>
-                    <p>{html.escape(issue['reason'])}</p>
+                    <p>{html.escape(str(issue.get('reason', '')))}</p>
                     <div class="pm-card-title">Recommended action</div>
-                    <p>{html.escape(issue['suggestion'])}</p>
+                    <p>{html.escape(str(issue.get('suggestion', '')))}</p>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -825,7 +872,8 @@ elif selected_page == "Review Studio":
                     "issue": issue["issue"],
                     "original_word": original_word,
                     "replacement": replacement_word,
-                    "decision": decision
+                    "decision": decision,
+                    "severity": severity
                 })
 
                 st.divider()
@@ -842,6 +890,11 @@ elif selected_page == "Review Studio":
                 if item["decision"] == "Accept suggestion"
             )
 
+            rejected_count = sum(
+                1 for item in review_decisions
+                if item["decision"] == "Reject suggestion"
+            )
+
             pending_count = sum(
                 1 for item in review_decisions
                 if item["decision"] == "Pending"
@@ -851,10 +904,13 @@ elif selected_page == "Review Studio":
 
             st.write(
                 f"Accepted: **{accepted_count}** · "
+                f"Rejected: **{rejected_count}** · "
                 f"Pending: **{pending_count}**"
             )
 
+            # Save reviewer name, decision and severity to audit log.
             for index, item in enumerate(review_decisions):
+
                 decision = item["decision"]
                 audit_key = (st.session_state.review_id, index)
 
@@ -862,6 +918,13 @@ elif selected_page == "Review Studio":
                     decision != "Pending"
                     and audit_key not in st.session_state.audit_saved
                 ):
+
+                    if not st.session_state.reviewer_name:
+                        st.warning(
+                            "Enter a reviewer name before saving decisions."
+                        )
+                        continue
+
                     save_review_audit(
                         issue=item["issue"],
                         original_word=item["original_word"],
@@ -872,7 +935,9 @@ elif selected_page == "Review Studio":
                             else "Rejected"
                         ),
                         original_content=original_content,
-                        corrected_content=corrected_content
+                        corrected_content=corrected_content,
+                        severity=item["severity"],
+                        reviewer=st.session_state.reviewer_name
                     )
 
                     st.session_state.audit_saved.add(audit_key)
@@ -926,7 +991,162 @@ elif selected_page == "Review Studio":
 
 
 # ==========================================================
-# BRAND RULES — ENHANCED
+# ADVANCED ANALYTICS
+# ==========================================================
+
+elif selected_page == "Analytics":
+
+    page_heading(
+        "PERFORMANCE INTELLIGENCE",
+        "Advanced analytics",
+        "Understand review decisions, recurring issues and reviewer activity."
+    )
+
+    analytics = get_analytics_stats()
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        metric_card("TOTAL DECISIONS", analytics["total"])
+
+    with col2:
+        metric_card("ACCEPTED", analytics["accepted"])
+
+    with col3:
+        metric_card("REJECTED", analytics["rejected"])
+
+    with col4:
+        metric_card("ACCEPTANCE RATE", f"{analytics['acceptance_rate']}%")
+
+    st.markdown("<div class='section-line'></div>",
+                unsafe_allow_html=True)
+
+    if analytics["total"] == 0:
+        st.info(
+            "Analytics will appear here after reviewers make decisions "
+            "in the Review Studio."
+        )
+
+    else:
+        left, right = st.columns(2)
+
+        with left:
+            st.subheader("Decision distribution")
+
+            decision_df = pd.DataFrame({
+                "Decision": ["Accepted", "Rejected"],
+                "Count": [
+                    analytics["accepted"],
+                    analytics["rejected"]
+                ]
+            })
+
+            st.bar_chart(
+                decision_df.set_index("Decision"),
+                color="#18A999"
+            )
+
+        with right:
+            st.subheader("Severity distribution")
+
+            severity_rows = get_severity_distribution()
+
+            if severity_rows:
+                severity_df = pd.DataFrame(
+                    severity_rows,
+                    columns=["Severity", "Count"]
+                )
+
+                st.bar_chart(
+                    severity_df.set_index("Severity")
+                )
+            else:
+                st.info("No severity data is available yet.")
+
+        st.markdown("<div class='section-line'></div>",
+                    unsafe_allow_html=True)
+
+        left, right = st.columns(2)
+
+        with left:
+            st.subheader("Frequently flagged terms")
+
+            term_rows = get_top_flagged_terms()
+
+            if term_rows:
+                terms_df = pd.DataFrame(
+                    term_rows,
+                    columns=["Term", "Occurrences"]
+                )
+
+                st.bar_chart(
+                    terms_df.set_index("Term"),
+                    color="#18A999"
+                )
+            else:
+                st.info("No flagged-term data is available.")
+
+        with right:
+            st.subheader("Review activity over time")
+
+            activity_rows = get_review_activity()
+
+            if activity_rows:
+                activity_df = pd.DataFrame(
+                    activity_rows,
+                    columns=["Date", "Reviews"]
+                )
+
+                activity_df["Date"] = pd.to_datetime(
+                    activity_df["Date"]
+                )
+
+                activity_df = activity_df.set_index("Date")
+
+                st.line_chart(
+                    activity_df,
+                    color="#18A999"
+                )
+            else:
+                st.info("No review activity is available.")
+
+        st.markdown("<div class='section-line'></div>",
+                    unsafe_allow_html=True)
+
+        st.subheader("Reviewer activity")
+
+        reviewer_rows = get_reviewer_stats()
+
+        if reviewer_rows:
+            reviewer_df = pd.DataFrame(
+                reviewer_rows,
+                columns=[
+                    "Reviewer",
+                    "Total Reviews",
+                    "Accepted",
+                    "Rejected"
+                ]
+            )
+
+            st.dataframe(
+                reviewer_df,
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info(
+                "Reviewer statistics will appear after decisions "
+                "are saved with reviewer names."
+            )
+
+        st.caption(
+            "Analytics are based on saved review decisions. "
+            "Pending choices are not stored as audit decisions."
+        )
+
+
+# ==========================================================
+# BRAND RULES
 # ==========================================================
 
 elif selected_page == "Brand Rules":
@@ -1025,7 +1245,9 @@ elif selected_page == "Brand Rules":
                 )
 
                 safe_word = html.escape(word)
-                safe_replacement = html.escape(replacement or "Not specified")
+                safe_replacement = html.escape(
+                    replacement or "Not specified"
+                )
                 safe_explanation = html.escape(details["explanation"])
                 safe_bad = html.escape(details["bad_example"])
                 safe_good = html.escape(details["good_example"])
@@ -1129,8 +1351,9 @@ elif selected_page == "Brand Rules":
 
 
 # ==========================================================
-# AUDIT LOGS
+# BRAND POLICIES
 # ==========================================================
+
 elif selected_page == "Brand Policies":
 
     page_heading(
@@ -1208,6 +1431,12 @@ elif selected_page == "Brand Policies":
 
     else:
         st.info("No brand policies added yet.")
+
+
+# ==========================================================
+# AUDIT LOGS
+# ==========================================================
+
 elif selected_page == "Audit Logs":
 
     page_heading(
@@ -1223,13 +1452,18 @@ elif selected_page == "Audit Logs":
         columns = [
             "ID", "Issue", "Original Word", "Replacement",
             "Decision", "Original Content", "Corrected Content",
-            "Reviewed At"
+            "Reviewed At", "Severity", "Reviewer"
         ]
 
         history_df = pd.DataFrame(history, columns=columns)
 
-        accepted = sum(1 for item in history if item[4] == "Accepted")
-        rejected = sum(1 for item in history if item[4] == "Rejected")
+        accepted = sum(
+            1 for item in history if item[4] == "Accepted"
+        )
+
+        rejected = sum(
+            1 for item in history if item[4] == "Rejected"
+        )
 
         col1, col2, col3 = st.columns(3)
 
@@ -1279,6 +1513,8 @@ elif selected_page == "Audit Logs":
             <p><b>Issue:</b> {html.escape(str(selected_record['Issue']))}</p>
             <p><b>Decision:</b> {html.escape(str(selected_record['Decision']))}</p>
             <p><b>Replacement:</b> {html.escape(str(selected_record['Replacement']))}</p>
+            <p><b>Severity:</b> {html.escape(str(selected_record['Severity']))}</p>
+            <p><b>Reviewer:</b> {html.escape(str(selected_record['Reviewer']))}</p>
             <p class="pm-muted">
                 Reviewed at: {html.escape(str(selected_record['Reviewed At']))}
             </p>
