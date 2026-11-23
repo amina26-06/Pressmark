@@ -4,4 +4,4 @@ pandas
 Pillow
 python-docx
 pdfplumber
-google-genai
+groq
